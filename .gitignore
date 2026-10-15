@@ -1,0 +1,19 @@
+# 编辑器 / IDE 的本地状态，不参与发布
+.codeartsdoer/
+.vscode/
+.idea/
+
+# 本地预览截图（可随时重新生成）
+preview-*.png
+*.local.png
+
+# 系统与临时文件
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+*.log
+
+# Node（本项目不需要构建，保留以防本地装工具）
+node_modules/
+npm-debug.log*

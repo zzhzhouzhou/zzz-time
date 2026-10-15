@@ -1,0 +1,1371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#F2F2F7" />
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#101215" />
+<meta name="description" content="基于 90 分钟睡眠周期的入睡时刻计算器：从起床时间倒推上床时刻，或从上床时间正推起床时刻。" />
+<title>睡眠周期</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    color-scheme: light dark;
+    /* 分组列表（iOS 设置）配色 */
+    --bg: #F2F2F7;
+    --card: #FFFFFF;
+    --text: #000000;
+    --text-2: #8E8E93;
+    --text-3: #C7C7CC;
+    --sep: rgba(60, 60, 67, .14);
+    --blue: #007AFF;
+    --seg-bg: rgba(118, 118, 128, .12);
+    /* 浅色下胶囊为浅灰底、滑块为白色，与 iOS 设置一致 */
+    --seg-thumb: #FFFFFF;
+    --tabbar-bg: rgba(232, 232, 237, .92);
+    --tabbar-line: rgba(60, 60, 67, .08);
+    --hover: rgba(120, 120, 128, .16);
+    --thumb-shadow: 0 1px 3px rgba(0, 0, 0, .16);
+    --radius: 10px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      /* 深灰底：比纯黑更有层次，同时明显深于卡片，保证层级与按钮对比 */
+      --bg: #101215;
+      --card: #23262B;
+      --text: #FFFFFF;
+      --text-2: #9A9DA5;
+      --text-3: #5A5D64;
+      --sep: rgba(120, 124, 134, .28);
+      --blue: #0A84FF;
+      --seg-bg: rgba(140, 145, 156, .22);
+      /* 胶囊与滑块同为中性灰，只用一档明度差区分，不再发亮 */
+      --tabbar-bg: rgba(44, 48, 55, .88);
+      --tabbar-line: rgba(255, 255, 255, .06);
+      --seg-thumb: #4A4F58;
+      --hover: rgba(140, 145, 156, .22);
+      --thumb-shadow: 0 1px 3px rgba(0, 0, 0, .35);
+    }
+  }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    min-height: 100dvh;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 17px;
+    line-height: 1.45;
+    letter-spacing: -.01em;
+    color: var(--text);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* .app 只负责居中与留白，不参与变换；
+     真正翻转的是内部的 .flip-face，它的盒子宽度就是面板宽度，
+     所以 transform-origin: center center 得到的是「面板自己的正中心」轴。 */
+  .app {
+    width: 100%;
+    max-width: 560px;
+    margin: 0 auto;
+    padding:
+      calc(18px + env(safe-area-inset-top))
+      calc(16px + env(safe-area-inset-right))
+      calc(76px + env(safe-area-inset-bottom))
+      calc(16px + env(safe-area-inset-left));
+  }
+
+  /* 立体翻转：整块面板绕「正中间」的竖直轴翻转，像一张卡片翻到背面。
+     .stage 只提供透视并对超出的立体侧边做裁剪。 */
+  .stage { perspective: 1600px; overflow-x: clip; }
+  .flip-face { backface-visibility: hidden; transform-origin: center center; }
+
+  @keyframes flipOutFront {
+    0%   { transform: rotateY(0deg); opacity: 1; }
+    100% { transform: rotateY(90deg); opacity: 0; }
+  }
+
+  @keyframes flipInBack {
+    0%   { transform: rotateY(-90deg); opacity: 0; }
+    100% { transform: rotateY(0deg); opacity: 1; }
+  }
+
+  @keyframes flipOutBack {
+    0%   { transform: rotateY(0deg); opacity: 1; }
+    100% { transform: rotateY(-90deg); opacity: 0; }
+  }
+
+  @keyframes flipInFront {
+    0%   { transform: rotateY(90deg); opacity: 0; }
+    100% { transform: rotateY(0deg); opacity: 1; }
+  }
+
+  /* 两段动画由 JS 串起来，各自无延迟，衔接处正好是 90°（面板几乎不可见） */
+  .flip-face.is-flipping.is-out.is-next { animation: flipOutFront .24s cubic-bezier(.4, 0, 1, 1) forwards; }
+  .flip-face.is-flipping.is-in.is-next  { animation: flipInBack  .3s  cubic-bezier(0, 0, .3, 1) forwards; }
+  .flip-face.is-flipping.is-out.is-prev { animation: flipOutBack .24s cubic-bezier(.4, 0, 1, 1) forwards; }
+  .flip-face.is-flipping.is-in.is-prev  { animation: flipInFront .3s  cubic-bezier(0, 0, .3, 1) forwards; }
+
+  @keyframes pageShade {
+    0%   { opacity: .34; }
+    100% { opacity: 0; }
+  }
+
+  /* 翻转阴影层：强化面板翻到背面时的立体感 */
+  .page-shade {
+    position: fixed;
+    inset: 0;
+    z-index: 8;
+    pointer-events: none;
+    background: #000;
+    opacity: 0;
+    visibility: hidden;
+  }
+
+  .page-shade.is-on { visibility: visible; animation: pageShade .5s cubic-bezier(.34, .01, .3, 1) forwards; }
+
+  .page-head { margin-bottom: 16px; padding: 0 2px; }
+
+  .page-head h1 {
+    font-size: clamp(22px, 6vw, 28px);
+    font-weight: 700;
+    letter-spacing: -.03em;
+    line-height: 1.2;
+  }
+
+  .page-head p { margin-top: 3px; font-size: 13px; color: var(--text-2); }
+
+  .tabbar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 9;
+    display: flex;
+    justify-content: center;
+    padding: 0 16px;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+    pointer-events: none;
+    /* 底部渐隐：让胶囊与页面背景之间有一层过渡，避免「融为一体」 */
+    background: linear-gradient(to top, var(--bg) 42%, transparent);
+    transform: translateY(0);
+    transition: transform .32s cubic-bezier(.32, .72, 0, 1);
+  }
+
+  .tabbar.is-hidden { transform: translateY(150%); }
+
+  .segmented {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding: 2px;
+    background: var(--tabbar-bg);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border-radius: 100px;
+    box-shadow:
+      inset 0 0 0 1px var(--tabbar-line),
+      0 4px 16px rgba(0, 0, 0, .14);
+    margin: 0;
+    width: fit-content;
+    max-width: 100%;
+    pointer-events: auto;
+  }
+
+  .seg-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: calc(50% - 2px);
+    height: calc(100% - 4px);
+    background: var(--seg-thumb);
+    border-radius: 100px;
+    box-shadow: var(--thumb-shadow);
+    transition: transform .3s cubic-bezier(.32, .72, 0, 1);
+    will-change: transform;
+  }
+
+  .seg-btn {
+    position: relative;
+    z-index: 1;
+    min-height: 34px;
+    padding: 0 20px;
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--text-2);
+    background: transparent;
+    border: 0;
+    border-radius: 100px;
+    cursor: pointer;
+    transition: color .2s ease;
+    -webkit-tap-highlight-color: transparent;
+    white-space: nowrap;
+  }
+
+  .seg-btn.is-active { color: var(--text); font-weight: 600; }
+
+  .group { margin-bottom: 18px; }
+
+  .group-label { font-size: 13px; color: var(--text-2); margin: 0 2px 6px; }
+
+  .card { background: var(--card); border-radius: var(--radius); overflow: hidden; }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 48px;
+    padding: 0 16px;
+    border-top: 1px solid var(--sep);
+  }
+
+  .row:first-child { border-top: 0; }
+  .row-label { font-size: 16px; color: var(--text); }
+
+  .row-value { display: flex; align-items: center; gap: 6px; font-size: 16px; color: var(--text-2); }
+
+  .row-tap {
+    width: 100%;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .chevron { width: 8px; height: 13px; flex: none; color: var(--text-3); }
+
+  .stepper { display: flex; align-items: center; background: var(--seg-bg); border-radius: 9px; }
+
+  .stepper-btn {
+    width: 42px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    color: var(--blue);
+    background: transparent;
+    border: 0;
+    border-radius: 9px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    transition: background .16s ease;
+  }
+
+  .stepper-btn:disabled { color: var(--text-3); }
+  .stepper-btn svg { display: block; }
+
+  .stepper-input {
+    width: 44px;
+    height: 34px;
+    padding: 0;
+    font: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    color: var(--text);
+    background: transparent;
+    border: 0;
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
+  .stepper-input:focus { background: rgba(120, 120, 128, .18); border-radius: 5px; }
+
+  .stepper-unit { font-size: 13px; color: var(--text-2); margin-right: 6px; }
+
+  .picker-card { padding-top: 6px; }
+
+  .wheel { position: relative; display: flex; align-items: center; justify-content: center; gap: 2px; height: 160px; }
+
+  .wheel::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 150px;
+    height: 32px;
+    transform: translate(-50%, -50%);
+    background: var(--seg-bg);
+    border-radius: 8px;
+    pointer-events: none;
+  }
+
+  .wheel-col {
+    position: relative;
+    z-index: 1;
+    width: 66px;
+    height: 160px;
+    overflow-y: scroll;
+    scroll-snap-type: y mandatory;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    cursor: default;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 30%, #000 70%, transparent);
+    mask-image: linear-gradient(to bottom, transparent, #000 30%, #000 70%, transparent);
+  }
+
+  .wheel-col::-webkit-scrollbar { display: none; }
+  .wheel-col:focus-visible { outline: 2px solid var(--blue); outline-offset: -4px; border-radius: 8px; }
+
+  .wheel-pad { height: 64px; }
+
+  .wheel-item {
+    height: 32px;
+    line-height: 32px;
+    text-align: center;
+    font-size: 20px;
+    font-variant-numeric: tabular-nums;
+    scroll-snap-align: center;
+    color: var(--text);
+    user-select: none;
+    transform-origin: center center;
+    will-change: transform, opacity;
+  }
+
+  .wheel-sep { position: relative; z-index: 1; font-size: 20px; font-weight: 600; color: var(--text); padding-bottom: 2px; }
+
+  .preset-row {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    padding: 8px 14px 12px;
+    border-top: 1px solid var(--sep);
+  }
+
+  .preset-row::-webkit-scrollbar { display: none; }
+  .preset-row > .preset:first-child { margin-left: auto; }
+  .preset-row > .preset:last-child { margin-right: auto; }
+
+  .preset {
+    flex: none;
+    font: inherit;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    min-height: 34px;
+    padding: 0 12px;
+    color: var(--text);
+    background: var(--seg-bg);
+    border: 0;
+    border-radius: 100px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    transition: background .18s ease, color .18s ease, transform .18s cubic-bezier(.32, .72, 0, 1);
+  }
+
+  .preset.is-active { color: #FFFFFF; background: var(--blue); }
+
+  .cards { display: grid; grid-template-columns: 1fr; gap: 10px; }
+
+  .plan {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    padding: 16px 16px 15px;
+    background: var(--card);
+    border-radius: var(--radius);
+  }
+
+  .plan.is-best { box-shadow: inset 0 0 0 2px var(--blue); }
+
+  .plan-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+
+  /* 周期文案允许收缩并保持单行；窄卡片下优先保证不换行，
+     必要时才省略，避免把卡片撑高导致三列参差不齐。 */
+  .plan-cycles {
+    font-size: 13px;
+    color: var(--text-2);
+    min-width: 0;
+    flex: 1 1 auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tag {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .02em;
+    padding: 3px 8px;
+    border-radius: 100px;
+    color: var(--blue);
+    background: rgba(0, 122, 255, .12);
+    background: color-mix(in srgb, var(--blue) 14%, transparent);
+    /* 「最佳」必须始终单行，不能被挤成两行 */
+    flex: none;
+    white-space: nowrap;
+  }
+
+  .tag-solid { color: #FFFFFF; background: var(--blue); }
+
+  .plan-time {
+    font-size: 42px;
+    font-weight: 700;
+    letter-spacing: -.045em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.02;
+    white-space: nowrap;
+  }
+
+  .plan-when {
+    margin-left: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0;
+    color: var(--text-2);
+  }
+
+  /* 「距离现在还有 X 小时 X 分钟」——比单纯时刻更直观 */
+  .plan-now {
+    margin-top: 7px;
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .plan.is-best .plan-now { color: var(--blue); }
+
+  .more-btn {
+    display: block;
+    width: 100%;
+    min-height: 46px;
+    margin-top: 10px;
+    font: inherit;
+    font-size: 15px;
+    color: var(--blue);
+    background: var(--card);
+    border: 0;
+    border-radius: var(--radius);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background .18s ease;
+  }
+
+  .reset-row {
+    display: block;
+    width: 100%;
+    min-height: 46px;
+    margin-top: 8px;
+    font: inherit;
+    font-size: 16px;
+    color: var(--blue);
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background .18s ease;
+  }
+
+  .foot { margin-top: 14px; padding: 0 2px; font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
+
+  /* 免责声明下方的极小字跳转链接 */
+  .foot-link {
+    display: inline-block;
+    margin-top: 6px;
+    font-size: 10.5px;
+    line-height: 1.4;
+    color: var(--text-3);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: color .18s ease, border-color .18s ease;
+  }
+
+  @media (hover: hover) {
+    .foot-link:hover { color: var(--text-2); border-bottom-color: currentColor; }
+  }
+
+  :focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+  .sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .4);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity .26s ease, visibility .26s;
+    z-index: 10;
+  }
+
+  .sheet-backdrop.is-open { opacity: 1; visibility: visible; }
+
+  .sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 11;
+    max-width: 560px;
+    margin: 0 auto;
+    background: var(--card);
+    border-radius: 14px 14px 0 0;
+    padding: 8px 0 calc(8px + env(safe-area-inset-bottom));
+    transform: translateY(102%);
+    visibility: hidden;
+    transition: transform .34s cubic-bezier(.32, .72, 0, 1), visibility .34s;
+    max-height: 78dvh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sheet.is-open { transform: translateY(0); visibility: visible; }
+
+  .sheet-handle { width: 36px; height: 5px; border-radius: 3px; background: var(--text-3); margin: 0 auto 6px; flex: none; }
+
+  .sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 16px 10px;
+    border-bottom: 1px solid var(--sep);
+    flex: none;
+  }
+
+  .sheet-title { font-size: 16px; font-weight: 600; }
+
+  .sheet-done {
+    font: inherit;
+    font-size: 16px;
+    color: var(--blue);
+    background: transparent;
+    border: 0;
+    padding: 4px 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .sheet-list { list-style: none; overflow-y: auto; padding: 6px 0; -webkit-overflow-scrolling: touch; }
+
+  .sheet-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 50px;
+    padding: 8px 16px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background .16s ease;
+  }
+
+  .sheet-item-main { display: flex; flex-direction: column; gap: 2px; }
+  .sheet-item-name { font-size: 16px; }
+  .sheet-item-desc { font-size: 13px; color: var(--text-2); }
+
+  .sheet-check { width: 18px; height: 18px; flex: none; color: var(--blue); opacity: 0; transition: opacity .18s ease; }
+  .sheet-item.is-selected .sheet-check { opacity: 1; }
+  .sheet-item.is-selected .sheet-item-name { font-weight: 600; }
+
+  @media (hover: hover) {
+    .seg-btn:hover { color: var(--text); }
+    .preset:hover:not(.is-active) { background: var(--hover); }
+    .preset:active { transform: scale(.95); }
+    .row-tap:hover, .more-btn:hover, .reset-row:hover, .stepper-btn:hover:not(:disabled) { background: var(--hover); }
+    .sheet-item:hover { background: var(--hover); }
+  }
+
+  /* 中等宽度（宽屏手机 / 竖屏平板）：仍是单列，但收紧最大宽度，
+     避免卡片被拉得过宽；同时放大时间数字。 */
+  @media (min-width: 480px) {
+    .app { max-width: 520px; padding-left: 24px; padding-right: 24px; }
+    .plan { padding: 17px 18px 16px; }
+    .plan-time { font-size: 46px; }
+    .plan-now { font-size: 13.5px; }
+    .plan-cycles { font-size: 13.5px; }
+  }
+
+  /* 宽屏（平板横屏 / 小电脑）：容器放宽后卡片才够宽，这时才切三列。
+     三列需要每列至少约 250px，因此下限取 830px。 */
+  @media (min-width: 830px) {
+    .app {
+      max-width: 880px;
+      padding-left: calc(24px + env(safe-area-inset-left));
+      padding-right: calc(24px + env(safe-area-inset-right));
+    }
+    .cards { grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .plan { padding: 18px 18px 17px; }
+    .plan-time { font-size: 46px; }
+    .plan-now { font-size: 13.5px; }
+    .sheet { border-radius: 14px; bottom: 24px; max-width: 880px; }
+    .wheel { height: 180px; }
+    .wheel-col { height: 180px; }
+    .wheel-pad { height: 74px; }
+    .page-head h1 { font-size: 30px; }
+    .page-head p { font-size: 14px; }
+  }
+
+  /* 大屏：进一步放宽留白与字号，让时间成为视觉主角 */
+  @media (min-width: 1024px) {
+    .app { max-width: 960px; padding-top: calc(40px + env(safe-area-inset-top)); }
+    .cards { gap: 16px; }
+    .plan { padding: 22px 22px 20px; border-radius: 14px; }
+    .plan-time { font-size: 54px; }
+    .plan-cycles { font-size: 14px; }
+    .plan-now { font-size: 14px; }
+    .group { margin-bottom: 22px; }
+    .page-head { margin-bottom: 20px; }
+    .page-head h1 { font-size: 34px; }
+  }
+
+  /* 窄屏手机 */
+  @media (max-width: 380px) {
+    .app { padding-left: 12px; padding-right: 12px; }
+    .page-head h1 { font-size: 20px; }
+    .group { margin-bottom: 14px; }
+    .plan { padding: 14px 14px 13px; }
+    .plan-time { font-size: 38px; }
+    .wheel { height: 150px; }
+    .wheel-col { height: 150px; }
+    .wheel-item { font-size: 19px; }
+    .preset { font-size: 12px; padding: 0 10px; min-height: 32px; }
+    .seg-btn { padding: 0 14px; font-size: 13px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition-duration: .001ms !important; animation-duration: .001ms !important; }
+  }
+</style>
+</head>
+<body>
+  <main class="stage" id="stage">
+  <div class="app" id="app">
+   <div class="flip-face" id="flipFace">
+    <header class="page-head">
+      <h1>睡眠周期</h1>
+      <p id="pageSub">90 分钟一个周期，由起床时刻倒推上床时刻</p>
+    </header>
+
+
+    <section class="group">
+      <div class="group-label" id="timeLabel">你的起床时间</div>
+      <div class="card picker-card">
+        <div class="wheel">
+          <div class="wheel-col" id="hourCol" role="spinbutton" tabindex="0" aria-label="小时" aria-valuemin="0" aria-valuemax="23"></div>
+          <div class="wheel-sep">:</div>
+          <div class="wheel-col" id="minuteCol" role="spinbutton" tabindex="0" aria-label="分钟" aria-valuemin="0" aria-valuemax="59"></div>
+        </div>
+        <div class="preset-row" id="presetRow"></div>
+      </div>
+    </section>
+
+    <section class="group">
+      <div class="card">
+        <div class="row">
+          <span class="row-label" id="latencyLabel">入睡时间</span>
+          <div class="stepper">
+            <button type="button" class="stepper-btn" id="lessLatency" aria-label="减少一分钟">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M6 12h12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+            </button>
+            <input class="stepper-input" id="latencyInput" type="text" inputmode="numeric" maxlength="2" aria-label="入睡时间（分钟）" />
+            <span class="stepper-unit">分</span>
+            <button type="button" class="stepper-btn" id="moreLatency" aria-label="增加一分钟">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M12 6v12M6 12h12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </div>
+        <button type="button" class="row row-tap" id="ageRow">
+          <span class="row-label">年龄段</span>
+          <span class="row-value">
+            <span id="ageValue">26–35 岁</span>
+            <svg class="chevron" viewBox="0 0 8 13" fill="none" aria-hidden="true"><path d="M1 1l5.5 5.5L1 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+        </button>
+      </div>
+    </section>
+
+    <section class="group">
+      <div class="group-label" id="resultTitle">建议上床时间</div>
+      <div class="cards" id="cards"></div>
+      <button type="button" class="more-btn" id="moreBtn">显示更多选项</button>
+      <button type="button" class="reset-row" id="resetBtn">恢复默认</button>
+    </section>
+    <p class="foot">睡眠周期存在个体差异，结果仅供参考，不构成医疗建议。</p>
+    <a class="foot-link" href="https://github.com/zzhzhouzhou/sleep-cycle" target="_blank" rel="noopener noreferrer">开源项目 · GitHub</a>
+   </div>
+  </div>
+  </main>
+
+  <div class="page-shade" id="pageShade" aria-hidden="true"></div>
+
+  <nav class="tabbar" id="tabbar">
+    <div class="segmented" id="segmented" role="tablist" aria-label="计算模式">
+      <span class="seg-thumb" id="segThumb" aria-hidden="true"></span>
+      <button type="button" class="seg-btn is-active" data-mode="sleep" role="tab" aria-selected="true">由起床推算</button>
+      <button type="button" class="seg-btn" data-mode="wake" role="tab" aria-selected="false">由上床推算</button>
+    </div>
+  </nav>
+
+  <div class="sheet-backdrop" id="sheetBackdrop"></div>
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="选择年龄段">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <span class="sheet-title">选择年龄段</span>
+      <button type="button" class="sheet-done" id="sheetDone">完成</button>
+    </div>
+    <ul class="sheet-list" id="ageList"></ul>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  var CYCLE_MIN = 90;
+  var CORE_CYCLES = [4, 5, 6];
+  var ALL_CYCLES = [3, 4, 5, 6, 7, 8];
+  var ITEM_H = 32;
+  var WHEEL_SETS = 3;
+  var LATENCY_MIN = 0;
+  var LATENCY_MAX = 60;
+  var LATENCY_DEFAULT = 15;
+  var AGE_DEFAULT = "22-25";
+  var MODE_DEFAULT_TIME = { sleep: { h: 7, m: 0 }, wake: { h: 23, m: 0 } };
+  var WAKE_PRESETS = ["06:00", "06:30", "07:00", "07:30", "08:00", "09:00", "09:30"];
+
+  /* 年龄段细分：按发育阶段与生活状态拆分，desc 作为选择器副标题 */
+  var AGES = [
+    { key: "0-3m",   label: "0–3 个月",   min: 14, max: 17, desc: "新生儿 · 昼夜未分化" },
+    { key: "4-11m",  label: "4–11 个月",  min: 12, max: 16, desc: "婴儿 · 多段小睡" },
+    { key: "1-2",    label: "1–2 岁",     min: 11, max: 14, desc: "幼儿 · 并觉期" },
+    { key: "3-5",    label: "3–5 岁",     min: 10, max: 13, desc: "学龄前 · 需午睡" },
+    { key: "6-8",    label: "6–8 岁",     min: 9,  max: 12, desc: "小学低年级" },
+    { key: "9-11",   label: "9–11 岁",    min: 9,  max: 11, desc: "小学高年级" },
+    { key: "12-13",  label: "12–13 岁",   min: 9,  max: 11, desc: "初中 · 青春期启动" },
+    { key: "14-15",  label: "14–15 岁",   min: 8,  max: 10, desc: "初中后期 · 作息易推迟" },
+    { key: "16-17",  label: "16–17 岁",   min: 8,  max: 10, desc: "高中 · 睡眠普遍不足" },
+    { key: "18-21",  label: "18–21 岁",   min: 7,  max: 9,  desc: "大学前期 · 作息自由" },
+    { key: "22-25",  label: "22–25 岁",   min: 7,  max: 9,  desc: "初入职场 · 通勤占时" },
+    { key: "26-30",  label: "26–30 岁",   min: 7,  max: 9,  desc: "职场上升期" },
+    { key: "31-35",  label: "31–35 岁",   min: 7,  max: 9,  desc: "事业稳定期" },
+    { key: "36-40",  label: "36–40 岁",   min: 7,  max: 9,  desc: "家庭育儿期" },
+    { key: "41-45",  label: "41–45 岁",   min: 7,  max: 9,  desc: "中年 · 深睡开始下降" },
+    { key: "46-50",  label: "46–50 岁",   min: 7,  max: 8,  desc: "更年期前后" },
+    { key: "51-55",  label: "51–55 岁",   min: 7,  max: 8,  desc: "中年后期 · 易早醒" },
+    { key: "56-60",  label: "56–60 岁",   min: 7,  max: 8,  desc: "临近退休" },
+    { key: "61-64",  label: "61–64 岁",   min: 7,  max: 8,  desc: "退休初期" },
+    { key: "65-74",  label: "65–74 岁",   min: 7,  max: 8,  desc: "老年 · 睡眠变浅" },
+    { key: "75",     label: "75 岁以上",  min: 7,  max: 8,  desc: "高龄 · 白天易困" }
+  ];
+
+  var state = {
+    mode: "sleep",
+    latency: LATENCY_DEFAULT,
+    ageKey: AGE_DEFAULT,
+    hour: MODE_DEFAULT_TIME.sleep.h,
+    minute: MODE_DEFAULT_TIME.sleep.m,
+    expanded: false
+  };
+
+  function $(id) { return document.getElementById(id); }
+
+  var el = {
+    seg: $("segmented"),
+    thumb: $("segThumb"),
+    tabbar: $("tabbar"),
+    hourCol: $("hourCol"),
+    minuteCol: $("minuteCol"),
+    presetRow: $("presetRow"),
+    timeLabel: $("timeLabel"),
+    latencyInput: $("latencyInput"),
+    lessBtn: $("lessLatency"),
+    plusBtn: $("moreLatency"),
+    ageRow: $("ageRow"),
+    ageValue: $("ageValue"),
+    resetBtn: $("resetBtn"),
+    resultTitle: $("resultTitle"),
+    cards: $("cards"),
+    moreOptionsBtn: $("moreBtn"),
+    app: $("app"),
+    face: $("flipFace"),
+    stage: $("stage"),
+    shade: $("pageShade"),
+    pageSub: $("pageSub"),
+    latencyLabel: $("latencyLabel"),
+    sheet: $("sheet"),
+    backdrop: $("sheetBackdrop"),
+    ageList: $("ageList"),
+    sheetDone: $("sheetDone")
+  };
+
+  (function () {
+    var lastY = window.scrollY;
+    var ticking = false;
+    window.addEventListener("scroll", function () {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(function () {
+        var y = window.scrollY;
+        var dy = y - lastY;
+        if (dy > 4 && y > 60) el.tabbar.classList.add("is-hidden");
+        else if (dy < -4 || y < 60) el.tabbar.classList.remove("is-hidden");
+        lastY = y;
+        ticking = false;
+      });
+    }, { passive: true });
+  })();
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function fmtTime(h, m) { return pad2(h) + ":" + pad2(m); }
+
+  function ageOf(key) {
+    for (var i = 0; i < AGES.length; i++) if (AGES[i].key === key) return AGES[i];
+    for (var j = 0; j < AGES.length; j++) if (AGES[j].key === AGE_DEFAULT) return AGES[j];
+    return AGES[0];
+  }
+
+  /* 与目标时刻的最近距离（可正可负）：
+     目标可能落在今天或前后一天，取「最接近当前时刻的那一次出现」。
+     这样 21:45（前一晚）就不会被误算成「22 小时 57 分钟后」。 */
+  function distanceTo(h, m) {
+    var now = new Date();
+    var nowMin = now.getHours() * 60 + now.getMinutes();
+    var diff = (h * 60 + m) - nowMin;
+    /* 归一到 (-720, 720]，即取最近一次出现 */
+    diff = ((diff % 1440) + 1440) % 1440;
+    if (diff > 720) diff -= 1440;
+    return diff;
+  }
+
+  /* 把「多久之后 / 多久之前」渲染成一句人话 */
+  function fmtRelative(mins, verb) {
+    if (mins === 0) return "就是现在该" + verb + "了";
+    if (mins > 0) return "距离" + verb + "还有 " + fmtDuration(mins);
+    return "已经过去 " + fmtDuration(-mins);
+  }
+
+  function fmtDuration(mins) {
+    var h = Math.floor(mins / 60);
+    var m = mins % 60;
+    if (h > 0 && m > 0) return h + " 小时 " + m + " 分钟";
+    if (h > 0) return h + " 小时";
+    return m + " 分钟";
+  }
+
+  function addMinutes(h, m, delta) {
+    var total = ((h * 60 + m + delta) % 1440 + 1440) % 1440;
+    return { h: Math.floor(total / 60), m: total % 60 };
+  }
+
+  /* 目标时刻落在哪一天，相对「基准时刻那一天」。
+     只比较两者的钟点差，阈值取半天（720 分钟）：
+       钟点差 > 720  -> 目标其实是前一天的晚些时候（例：基准 07:00、目标 18:45）
+       钟点差 < -720 -> 目标翻到了后一天（例：基准 23:00、目标 06:45）
+       其余          -> 同一天
+     用严格不等号，保证 18:45 这种恰好落在边界外侧的时刻能被正确标为「前一晚」。 */
+  function dayOffset(fromH, fromM, toH, toM) {
+    var diff = (toH * 60 + toM) - (fromH * 60 + fromM);
+    if (diff > 720) return -1;
+    if (diff < -720) return 1;
+    return 0;
+  }
+
+  function dayTag(offset) {
+    if (offset > 0) return "次日";
+    if (offset < 0) return "前一晚";
+    return "";
+  }
+
+  function buildWheel(col, count, initialValue, onInput) {
+    var total = count * WHEEL_SETS;
+    var frag = document.createDocumentFragment();
+    var padTop = document.createElement("div");
+    padTop.className = "wheel-pad";
+    frag.appendChild(padTop);
+    var k;
+    for (k = 0; k < total; k++) {
+      var item = document.createElement("div");
+      item.className = "wheel-item";
+      item.textContent = pad2(k % count);
+      frag.appendChild(item);
+    }
+    var padBottom = document.createElement("div");
+    padBottom.className = "wheel-pad";
+    frag.appendChild(padBottom);
+    col.innerHTML = "";
+    col.appendChild(frag);
+
+    var items = col.querySelectorAll(".wheel-item");
+    var setH = count * ITEM_H;
+    var timer = null;
+    var rafId = null;
+    var lastValue = initialValue;
+
+    function centerIndex() { return Math.round(col.scrollTop / ITEM_H); }
+
+    function paint() {
+      var center = col.scrollTop / ITEM_H;
+      var base = Math.round(center);
+      for (var i = base - 5; i <= base + 5; i++) {
+        if (i < 0 || i >= items.length) continue;
+        var d = Math.abs(i - center);
+        var scale, opacity;
+        if (d <= 1) {
+          scale = 1.16 - 0.16 * d;
+          opacity = 1 - 0.45 * d;
+        } else {
+          var e = d - 1;
+          scale = Math.max(0.74, 1.0 - 0.16 * e);
+          opacity = Math.max(0.12, 0.55 - 0.18 * e);
+        }
+        items[i].style.transform = "scale(" + scale.toFixed(3) + ")";
+        items[i].style.opacity = opacity.toFixed(3);
+      }
+    }
+
+    function requestPaint() {
+      if (rafId) return;
+      rafId = requestAnimationFrame(function () {
+        rafId = null;
+        paint();
+      });
+    }
+
+    function normalize() {
+      var i = centerIndex();
+      if (i < count) { col.scrollTop += setH; return true; }
+      if (i >= count * 2) { col.scrollTop -= setH; return true; }
+      return false;
+    }
+
+    function push() {
+      var value = ((centerIndex() % count) + count) % count;
+      if (value === lastValue) return;
+      lastValue = value;
+      onInput(value);
+    }
+
+    function schedule() {
+      if (timer) return;
+      timer = setTimeout(function () { timer = null; push(); }, 90);
+    }
+
+    col.addEventListener("scroll", function () {
+      requestPaint();
+      if (normalize()) { requestPaint(); return; }
+      schedule();
+    }, { passive: true });
+
+    col.addEventListener("wheel", function (e) {
+      e.preventDefault();
+      stepTo(centerIndex() + (e.deltaY > 0 ? 1 : -1));
+    }, { passive: false });
+
+    col.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowUp" || e.key === "ArrowLeft") { e.preventDefault(); stepTo(centerIndex() - 1); }
+      else if (e.key === "ArrowDown" || e.key === "ArrowRight") { e.preventDefault(); stepTo(centerIndex() + 1); }
+      else if (e.key === "Home") { e.preventDefault(); setValue(0); }
+      else if (e.key === "End") { e.preventDefault(); setValue(count - 1); }
+    });
+
+    col.addEventListener("click", function (e) {
+      var node = e.target.closest(".wheel-item");
+      if (!node) return;
+      var list = col.querySelectorAll(".wheel-item");
+      setValue(Array.prototype.indexOf.call(list, node) % count);
+    });
+
+    function stepTo(target) {
+      setValue(((target % count) + count) % count);
+    }
+
+    function setValue(value) {
+      var v = ((value % count) + count) % count;
+      col.scrollTop = (count + v) * ITEM_H;
+      lastValue = v;
+      paint();
+      onInput(v);
+    }
+
+    setValue(initialValue);
+
+    return { setValue: setValue };
+  }
+
+  /* 滑块位置只跟随「当前选中项」，与内容渲染解耦，
+     这样切换时可以先让滑块滑过去，再翻转页面。 */
+  function moveThumb(mode) {
+    el.thumb.style.transform = mode === "sleep" ? "translateX(0)" : "translateX(100%)";
+  }
+
+  function updateSegmentUI() {
+    var buttons = el.seg.querySelectorAll(".seg-btn");
+    for (var i = 0; i < buttons.length; i++) {
+      var active = buttons[i].dataset.mode === state.mode;
+      buttons[i].classList.toggle("is-active", active);
+      buttons[i].setAttribute("aria-selected", active ? "true" : "false");
+    }
+    moveThumb(state.mode);
+  }
+
+  function updateLatencyUI(syncInput) {
+    if (syncInput) el.latencyInput.value = String(state.latency);
+    el.lessBtn.disabled = state.latency <= LATENCY_MIN;
+    el.plusBtn.disabled = state.latency >= LATENCY_MAX;
+  }
+
+  function updateLabels() {
+    var isSleep = state.mode === "sleep";
+    el.timeLabel.textContent = isSleep ? "你希望几点起床" : "你打算几点上床";
+    el.resultTitle.textContent = isSleep ? "建议上床时间" : "建议起床时间";
+  }
+
+  function renderPresets() {
+    var html = "";
+    if (state.mode === "sleep") {
+      for (var i = 0; i < WAKE_PRESETS.length; i++) {
+        html += '<button type="button" class="preset" data-time="' + WAKE_PRESETS[i] + '">' + WAKE_PRESETS[i] + "</button>";
+      }
+    } else {
+      html = '<button type="button" class="preset" data-now="1">使用当前时间</button>';
+    }
+    el.presetRow.innerHTML = html;
+    highlightPresets();
+  }
+
+  function highlightPresets() {
+    var current = fmtTime(state.hour, state.minute);
+    var buttons = el.presetRow.querySelectorAll(".preset[data-time]");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].classList.toggle("is-active", buttons[i].dataset.time === current);
+    }
+  }
+
+  function render() {
+    var rec = ageOf(state.ageKey);
+    /* 用年龄段建议时长的中位数作为「最佳」判据，不再展示无实际作用的推荐区间标签 */
+    var mid = (rec.min + rec.max) / 2;
+    var cycles = state.expanded ? ALL_CYCLES : CORE_CYCLES;
+    var baseH = state.hour;
+    var baseM = state.minute;
+    var rows = [];
+    var bestIdx = 0;
+    var bestGap = Infinity;
+    var i;
+
+    for (i = 0; i < cycles.length; i++) {
+      var c = cycles[i];
+      var span = c * CYCLE_MIN;
+      var gap = Math.abs(span / 60 - mid);
+      if (gap < bestGap) { bestGap = gap; bestIdx = i; }
+      if (state.mode === "sleep") {
+        var asleep = addMinutes(baseH, baseM, -span);
+        var bed = addMinutes(asleep.h, asleep.m, -state.latency);
+        rows.push({ c: c, span: span, gap: gap, ph: bed.h, pm: bed.m, ah: asleep.h, am: asleep.m });
+      } else {
+        var asleepW = addMinutes(baseH, baseM, state.latency);
+        var wake = addMinutes(asleepW.h, asleepW.m, span);
+        rows.push({ c: c, span: span, gap: gap, ph: wake.h, pm: wake.m, ah: asleepW.h, am: asleepW.m });
+      }
+    }
+
+    for (i = 0; i < rows.length; i++) {
+      rows[i]._priority = (i === bestIdx) ? 0 : 1;
+    }
+    rows.sort(function (a, b) {
+      if (a._priority !== b._priority) return a._priority - b._priority;
+      return a.gap - b.gap;
+    });
+
+    var html = "";
+    for (i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var isBest = r._priority === 0;
+      var when = dayTag(dayOffset(baseH, baseM, r.ph, r.pm));
+      /* 距目标时刻多久：比单看时刻更直观 */
+      var delta = distanceTo(r.ph, r.pm);
+      var relLabel = fmtRelative(delta, state.mode === "sleep" ? "上床" : "起床");
+      var hoursLabel = fmtDuration(r.span);
+
+      html += '<article class="plan' + (isBest ? " is-best" : "") + '">'
+        + '<div class="plan-top"><span class="plan-cycles">' + r.c + " 个周期 · 睡 " + hoursLabel + "</span>"
+        + (isBest ? '<span class="tag tag-solid">最佳</span>' : "") + "</div>"
+        + '<div class="plan-time">' + fmtTime(r.ph, r.pm) + (when ? '<span class="plan-when">' + when + "</span>" : "") + "</div>"
+        + '<div class="plan-now">' + relLabel + "</div>"
+        + "</article>";
+    }
+    el.cards.innerHTML = html;
+
+    el.moreOptionsBtn.textContent = state.expanded ? "收起更多选项" : "显示更多选项";
+  }
+
+  function renderAgeList() {
+    var html = "";
+    for (var i = 0; i < AGES.length; i++) {
+      var a = AGES[i];
+      var sel = a.key === state.ageKey;
+      html += '<li class="sheet-item' + (sel ? " is-selected" : "") + '" data-key="' + a.key + '">'
+        + '<span class="sheet-item-main"><span class="sheet-item-name">' + a.label + "</span>"
+        + '<span class="sheet-item-desc">' + a.desc + " · 建议 " + a.min + "–" + a.max + " 小时</span></span>"
+        + '<svg class="sheet-check" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7.5-8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        + "</li>";
+    }
+    el.ageList.innerHTML = html;
+  }
+
+  function openSheet() {
+    renderAgeList();
+    el.sheet.classList.add("is-open");
+    el.backdrop.classList.add("is-open");
+    el.tabbar.classList.add("is-hidden");
+  }
+
+  function closeSheet() {
+    el.sheet.classList.remove("is-open");
+    el.backdrop.classList.remove("is-open");
+    el.tabbar.classList.remove("is-hidden");
+  }
+
+  var hourWheel = null;
+  var minuteWheel = null;
+
+  function setTime(h, m, syncWheels) {
+    state.hour = h;
+    state.minute = m;
+    if (syncWheels && hourWheel && minuteWheel) {
+      hourWheel.setValue(h);
+      minuteWheel.setValue(m);
+    }
+    highlightPresets();
+    render();
+  }
+
+  /* ---------- 立体翻转（绕正中间的竖直轴）----------
+     整块面板像一张卡片翻到背面：
+     先「翻出去」到 90°（此时几乎看不见），换好内容后再「翻进来」到 0°。
+     两段转轴都在 center center，所以是从中间翻转，而不是从两侧扫过。 */
+
+  var flipTimer = null;
+  var flipSwapTimer = null;
+  var flipGen = 0;
+  var flipBusy = false;
+  var FLIP_OUT_MS = 240;
+  var FLIP_IN_MS = 300;
+
+  function playFlip(direction, onSwapped) {
+    var face = el.face;
+    var dir = direction === "prev" ? "prev" : "next";
+    var gen = ++flipGen;
+
+    clearTimeout(flipTimer);
+    clearTimeout(flipSwapTimer);
+    face.classList.remove("is-flipping", "is-out", "is-in", "is-next", "is-prev");
+    void face.offsetWidth; /* 强制重排，保证连续切换也能重启动画 */
+
+    /* 第一段：翻出去 */
+    face.classList.add("is-flipping", "is-out", "is-" + dir);
+    el.shade.classList.remove("is-on");
+
+    /* 翻到 90°（面板几乎不可见）的瞬间换内容，看起来就像翻到了背面 */
+    flipSwapTimer = setTimeout(function () {
+      if (gen !== flipGen) return;
+      if (onSwapped) onSwapped();
+
+      /* 第二段：翻进来 */
+      face.classList.remove("is-out");
+      face.classList.add("is-in");
+      void el.shade.offsetWidth;
+      el.shade.classList.add("is-on");
+
+      flipTimer = setTimeout(function () {
+        if (gen !== flipGen) return;
+        face.classList.remove("is-flipping", "is-in", "is-next", "is-prev");
+        el.shade.classList.remove("is-on");
+        flipTimer = null;
+      }, FLIP_IN_MS);
+    }, FLIP_OUT_MS);
+  }
+
+  el.seg.addEventListener("click", function (e) {
+    var btn = e.target.closest(".seg-btn");
+    if (!btn || btn.dataset.mode === state.mode) return;
+    /* 锁住本次意图，避免快速连点时中途状态漂移 */
+    if (flipBusy) return;
+    flipBusy = true;
+
+    var target = btn.dataset.mode;
+
+    /* 滑块与页面翻转同时开始：滑块用 CSS transition 滑过去，
+       页面同时进入「翻出去 -> 翻进来」两段动画，两者互不等待。 */
+    var buttons = el.seg.querySelectorAll(".seg-btn");
+    for (var i = 0; i < buttons.length; i++) {
+      var on = buttons[i].dataset.mode === target;
+      buttons[i].classList.toggle("is-active", on);
+      buttons[i].setAttribute("aria-selected", on ? "true" : "false");
+    }
+    moveThumb(target);
+
+    playFlip(target === "wake" ? "next" : "prev", function () {
+      state.mode = target;
+      var def = MODE_DEFAULT_TIME[target];
+      state.hour = def.h;
+      state.minute = def.m;
+      if (hourWheel) { hourWheel.setValue(state.hour); minuteWheel.setValue(state.minute); }
+      updateLabels();
+      renderPresets();
+      render();
+      el.pageSub.textContent = target === "wake"
+        ? "90 分钟一个周期，由上床时刻正推起床时刻"
+        : "90 分钟一个周期，由起床时刻倒推上床时刻";
+    });
+
+    setTimeout(function () { flipBusy = false; }, FLIP_OUT_MS + FLIP_IN_MS + 60);
+  });
+
+  el.presetRow.addEventListener("click", function (e) {
+    var btn = e.target.closest(".preset");
+    if (!btn) return;
+    if (btn.dataset.now) {
+      var d = new Date();
+      setTime(d.getHours(), d.getMinutes(), true);
+    } else if (btn.dataset.time) {
+      var parts = btn.dataset.time.split(":");
+      setTime(Number(parts[0]), Number(parts[1]), true);
+    }
+  });
+
+  function changeLatency(delta) {
+    var next = state.latency + delta;
+    if (next < LATENCY_MIN) next = LATENCY_MIN;
+    if (next > LATENCY_MAX) next = LATENCY_MAX;
+    if (next === state.latency) return;
+    state.latency = next;
+    updateLatencyUI(true);
+    render();
+  }
+
+  function bindStepper(btn, delta) {
+    var holdTimer = null;
+    var repeatTimer = null;
+    var didRepeat = false;
+
+    function stop() {
+      clearTimeout(holdTimer);
+      clearInterval(repeatTimer);
+      holdTimer = null;
+      repeatTimer = null;
+    }
+
+    btn.addEventListener("pointerdown", function () {
+      if (btn.disabled) return;
+      didRepeat = false;
+      holdTimer = setTimeout(function () {
+        didRepeat = true;
+        changeLatency(delta);
+        repeatTimer = setInterval(function () {
+          if (btn.disabled) { stop(); return; }
+          changeLatency(delta);
+        }, 70);
+      }, 450);
+    });
+
+    btn.addEventListener("pointerup", stop);
+    btn.addEventListener("pointercancel", stop);
+    btn.addEventListener("pointerleave", stop);
+    btn.addEventListener("blur", stop);
+
+    btn.addEventListener("click", function () {
+      if (didRepeat) { didRepeat = false; return; }
+      changeLatency(delta);
+    });
+  }
+
+  bindStepper(el.lessBtn, -1);
+  bindStepper(el.plusBtn, 1);
+
+  el.latencyInput.addEventListener("focus", function () { el.latencyInput.select(); });
+
+  el.latencyInput.addEventListener("input", function () {
+    var raw = el.latencyInput.value.replace(/[^0-9]/g, "");
+    if (raw.length > 2) raw = raw.slice(0, 2);
+    if (raw !== el.latencyInput.value) el.latencyInput.value = raw;
+    if (raw === "") return;
+    var n = Number(raw);
+    if (n > LATENCY_MAX) { n = LATENCY_MAX; el.latencyInput.value = String(LATENCY_MAX); }
+    state.latency = n;
+    updateLatencyUI(false);
+    render();
+  });
+
+  el.latencyInput.addEventListener("blur", function () {
+    if (el.latencyInput.value === "") el.latencyInput.value = String(state.latency);
+    else state.latency = Number(el.latencyInput.value);
+    updateLatencyUI(true);
+    render();
+  });
+
+  el.latencyInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); el.latencyInput.blur(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); changeLatency(1); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); changeLatency(-1); }
+  });
+
+  el.ageRow.addEventListener("click", openSheet);
+  el.sheetDone.addEventListener("click", closeSheet);
+  el.backdrop.addEventListener("click", closeSheet);
+
+  el.ageList.addEventListener("click", function (e) {
+    var item = e.target.closest(".sheet-item");
+    if (!item) return;
+    state.ageKey = item.dataset.key;
+    el.ageValue.textContent = ageOf(state.ageKey).label;
+    closeSheet();
+    render();
+  });
+
+  el.moreOptionsBtn.addEventListener("click", function () {
+    state.expanded = !state.expanded;
+    render();
+  });
+
+  el.resetBtn.addEventListener("click", function () {
+    var def = MODE_DEFAULT_TIME[state.mode];
+    state.latency = LATENCY_DEFAULT;
+    state.ageKey = AGE_DEFAULT;
+    state.hour = def.h;
+    state.minute = def.m;
+    state.expanded = false;
+
+    if (hourWheel) { hourWheel.setValue(state.hour); minuteWheel.setValue(state.minute); }
+    updateLatencyUI(true);
+    el.ageValue.textContent = ageOf(AGE_DEFAULT).label;
+    highlightPresets();
+    render();
+  });
+
+  hourWheel = buildWheel(el.hourCol, 24, state.hour, function (v) {
+    state.hour = v;
+    highlightPresets();
+    render();
+  });
+
+  minuteWheel = buildWheel(el.minuteCol, 60, state.minute, function (v) {
+    state.minute = v;
+    highlightPresets();
+    render();
+  });
+
+  updateSegmentUI();
+  updateLabels();
+  updateLatencyUI(true);
+  el.ageValue.textContent = ageOf(state.ageKey).label;
+  renderPresets();
+  renderAgeList();
+  render();
+})();
+</script>
+</body>
+</html>
